@@ -8,13 +8,16 @@ output: html_document
 ```{r setup, include=FALSE}
 library(curl)
 library(caret)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(rattle)
+library(randomForest)
 ```
 
 ## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Download the testing and training sets from the provided links. This ensures any updates get captured when the prediction methods are run.
 
 ```{r}
 train_url <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
@@ -23,14 +26,85 @@ test_url <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
 train_set <- read.csv(train_url)
 test_set <- read.csv(test_url)
 
+set.seed(1221)
 ```
 
-## Including Plots
+First all columns with NA are removed fromt he training data. Then the timestamps, window data, names, and X variable are removed because they have no connection to the outcome of our prediction model. The testing set then has 86 unique variables however it's likely not all are useful for our prediction model. A covariate is created to have only near zero variance variables. 
 
-You can also embed plots, for example:
+This results in 53 unique variables to train our prediction model.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+An evaluation testing set will be made from the training set. This is to determine how accurate the training set is for the different models.
+
+```{r}
+train_set <- train_set[,colSums(is.na(train_set)) == 0]
+train_set <- train_set[, -c(1:7)]
+
+nz_cov <- nearZeroVar(train_set)
+train_set <- train_set[ ,-nz_cov]
+
+eval_list <- createDataPartition(train_set$classe, p = 0.8, list = FALSE)
+
+eval_set <- train_set[-eval_list,]
+train_set <- train_set[eval_list,]
+```
+
+
+# Correlary Data
+
+With a large number of variables there could be many variables that don't corrilate which could account for added noise in the model. So we can check if a large number of uncorrelated data exists so we can take it out to slim down the amount of processing required.
+
+```{r}
+cor_var <- abs(cor(train_set[,-53]))
+diag(cor_var) <- 0
+dim(which(cor_var > 0.75, arr.ind = T))
+
+corrplot(cor_var, type = "lower", method = "color",
+         tl.cex = 0.8,
+         tl.col = rgb(0,0,0))
+```
+From the correlation analysis we find there are only 32 unique combinations of variables that give a correlation of greater than 0.75. With this information we could preprocess our data just to reduce the number of calculations needed to be performed. But because the dataset is relatively small, there is no real need to reduce the number of uncorrelated variables.
+
+# Prediction Modeling
+
+2 methods of prediction modeling will be explored to determine the best fit for the testing set. This will show how a single classification tree will compare with multiple weighed average trees in a random forest.
+
+## Regression and Classification Trees
+
+```{r}
+mod_tree <- train(classe ~., method = "rpart", data = train_set)
+pred_tree <- predict(mod_tree, eval_set)
+mat_tree <- confusionMatrix(pred_tree, eval_set$classe)
+mat_tree
+fancyRpartPlot(mod_tree$finalModel)
+```
+
+## Random Forest
+
+```{r}
+tune_for <- tuneRF(train_set[,-53], train_set$classe, ntreeTry=500, stepFactor=1.5,improve=0.01, 
+               plot=FALSE, trace=TRUE, dobest=FALSE)
+
+tune_for
+
+mod_for <- randomForest(classe ~., data = train_set, tune_for = 4, ntree = 250)
+pred_for <- predict(mod_for,eval_set)
+mat_for <- confusionMatrix(pred_for, eval_set$classe)
+mat_for
+
+```
+
+## Accuracy Findings
+
+  Decision Tree: 0.48
+  Random Forest: 0.99
+  
+From our analysis, the random forest is twice as accurate as a single tree. So we will use the random forest prediction model moving forward to evaluate the testing set.
+
+This results in the prediction below for the week 4 quiz:
+
+```{r}
+prediction <- predict(mod_for, test_set)
+prediction
 ```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
